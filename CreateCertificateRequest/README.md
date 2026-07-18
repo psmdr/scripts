@@ -16,7 +16,16 @@ them as PFX.
 - PFX export of a certificate already in the store, with interactive password prompt
   (password is never passed as plain text or stored)
 - Combined "import and export" mode
+- Generates request JSON files from existing certificates - a `.cer` file, a
+  certificate in the local store (by thumbprint), or the certificate presented by a
+  remote server over TLS - useful for renewals with an identical subject/SAN
+- SAN extraction (both on read and on write) is locale-independent: it classifies
+  entries by their value's shape (IP vs. DNS name) rather than by parsing
+  OS-language-dependent labels
 - `-WhatIf` support for all file-writing and `certreq`/store-modifying operations
+- Result objects for each run are returned on the pipeline (e.g. capture with
+  `$r = .\New-CertificateRequest.ps1 ...`), and full, untruncated error messages for
+  any failed entries are printed separately below the summary table
 
 ## Requirements
 
@@ -28,7 +37,7 @@ them as PFX.
 
 ## Modes
 
-The script has four mutually exclusive modes. If none of the mode switches below is
+The script has five mutually exclusive modes. If none of the mode switches below is
 used, it defaults to creating a new request.
 
 | Mode | Switch | Purpose |
@@ -38,6 +47,7 @@ used, it defaults to creating a new request.
 | Complete request | `-CompleteRequest <file.cer>` | Import an issued certificate into the store |
 | Complete and export | `-CompleteAndExport <file.cer>` | Import, then immediately export as PFX |
 | Export PFX | `-ExportPfx -Thumbprint <thumbprint>` | Export an existing certificate as PFX |
+| Export request JSON | `-ExportRequestJson -Source...` | Generate request JSON file(s) from existing certificate data |
 
 ## Usage
 
@@ -102,6 +112,53 @@ the corresponding global parameter (`-Organization`, `-OrganizationalUnit`, `-Lo
 .\New-CertificateRequest.ps1 -ExportPfx -Thumbprint "AB12CD34EF56..." -IncludeChain
 ```
 
+### Generate a request JSON file from an existing certificate
+
+From a `.cer` file:
+
+```powershell
+.\New-CertificateRequest.ps1 -ExportRequestJson -SourceCerFile "C:\Certs\server01.cer"
+```
+
+From one or more certificates already in the local store:
+
+```powershell
+.\New-CertificateRequest.ps1 -ExportRequestJson -SourceThumbprint "AB12CD34...","EF56AB78..."
+```
+
+From the certificate presented by a remote server over TLS (host, `host:port`, or a
+full URL; default port 443):
+
+```powershell
+.\New-CertificateRequest.ps1 -ExportRequestJson -SourceUrl "server01.contoso.local:443"
+```
+
+Exactly one of `-SourceCerFile`, `-SourceThumbprint`, or `-SourceUrl` must be
+specified per run (each accepts multiple values). One JSON file is written per
+certificate, named after its CN - ready to be used directly as `-ImportFile` for a
+new request, e.g. for renewals with the same subject/SAN.
+
+For `-SourceUrl`, trust or validity errors (expired, self-signed, hostname mismatch,
+etc.) do not stop the read - the certificate's data is captured regardless, and a
+warning is printed instead. The goal is to capture the data of the certificate
+currently in use, including ones that are expiring or already invalid.
+
+### Working with the result objects
+
+Every run of the request-creation and `-ExportRequestJson` modes returns its result
+objects on the pipeline, in addition to printing a summary table. Capture them to
+inspect failures in full or process them further:
+
+```powershell
+$r = .\New-CertificateRequest.ps1 -ImportFile ".\requests.json" -Exportable:$false
+$r | Where-Object { -not $_.Success } | Format-List *
+$r | Export-Csv ".\results.csv" -NoTypeInformation
+```
+
+Any failed entry also has its full, untruncated error message printed directly below
+the summary table (the table itself truncates long text due to `Format-Table`'s
+column-width behavior).
+
 ## Parameters
 
 ### Request creation
@@ -121,7 +178,7 @@ the corresponding global parameter (`-Organization`, `-OrganizationalUnit`, `-Lo
 | `-KeyUsage` | `DigitalSignature`, `KeyEncipherment` | One or more key usage flags |
 | `-EnhancedKeyUsage` | `ServerAuthentication` | OIDs or short names (`ServerAuthentication`, `ClientAuthentication`, `CodeSigning`, `EmailProtection`) |
 | `-Organization`, `-OrganizationalUnit`, `-Locality`, `-State`, `-Country` | – | Global fallback values for JSON entries without their own field |
-| `-MachineContext` | `$true` | Machine vs. user context/store |
+| `-MachineContext` | `$true` | Machine vs. user context/store. Also determines which store `-CompleteRequest`, `-ExportPfx`, and `-ExportRequestJson -SourceThumbprint` read from |
 | `-KeepInf` | `$false` | Keep the generated `.inf` file instead of deleting it |
 | `-Force` | `$false` | Overwrite existing output files |
 
@@ -135,6 +192,10 @@ the corresponding global parameter (`-Organization`, `-OrganizationalUnit`, `-Lo
 | `-ExportPfx` | Export mode; requires `-Thumbprint` |
 | `-Thumbprint` | Thumbprint of the certificate to export |
 | `-IncludeChain` | Include the certificate chain in the PFX export (default: end-entity certificate only) |
+| `-ExportRequestJson` | Generate request JSON file(s) from existing certificate data; requires exactly one of the three `-Source...` parameters below |
+| `-SourceCerFile <path[]>` | One or more `.cer` files to read certificate data from |
+| `-SourceThumbprint <thumbprint[]>` | One or more thumbprints of certificates in the local store to read data from |
+| `-SourceUrl <host[]>` | One or more remote hosts (`host`, `host:port`, or a full URL) to read the presented TLS certificate from; default port 443 |
 
 ### Global
 
@@ -158,5 +219,6 @@ itself.
 
 ## File naming
 
-Output file names (`.req`, `.inf`, `.pfx`) are derived from the certificate's CN,
-with characters invalid in Windows file names replaced by `_`.
+Output file names (`.req`, `.inf`, `.pfx`, and JSON files from `-ExportRequestJson`)
+are derived from the certificate's CN, with characters invalid in Windows file names
+replaced by `_`.

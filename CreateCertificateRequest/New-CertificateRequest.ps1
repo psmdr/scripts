@@ -9,12 +9,15 @@
     a JSON file, single or batch entry) and calls "certreq -new" to produce the actual
     .req file. The CN is always automatically included as a SAN entry as well.
 
-    In addition, the script supports three further, mutually exclusive modes:
+    In addition, the script supports four further, mutually exclusive modes:
       - Import only, for a certificate received from the CA into the local certificate
         store (-CompleteRequest)
       - Import and immediate PFX export in a single call (-CompleteAndExport)
       - PFX export only, for a certificate already present in the local store
         (-ExportPfx)
+      - Generate one or more request JSON files from the data of existing
+        certificates - a .cer file, a certificate in the local store (by thumbprint),
+        or the certificate presented by a remote server (-ExportRequestJson)
 
     It can also generate an annotated example JSON file (-GenerateExampleJSON).
 
@@ -119,6 +122,26 @@
     Include the certificate chain in the PFX export (ChainOption BuildChain).
     Default: false (end-entity certificate only).
 
+.PARAMETER ExportRequestJson
+    Generates one request JSON file per source certificate (named after its CN),
+    ready to be used as -ImportFile for a new request (e.g. for renewals with the
+    same subject/SAN). Requires exactly one of -SourceCerFile, -SourceThumbprint,
+    or -SourceUrl (each accepts multiple values).
+
+.PARAMETER SourceCerFile
+    One or more paths to .cer files to read certificate data from.
+
+.PARAMETER SourceThumbprint
+    One or more thumbprints of certificates in the local certificate store
+    (see -MachineContext for which store) to read certificate data from.
+
+.PARAMETER SourceUrl
+    One or more remote hosts to connect to (format "host", "host:port", or a full
+    URL) in order to read the certificate presented during the TLS handshake.
+    Default port: 443. Trust/validity errors (expired, self-signed, hostname
+    mismatch, ...) only produce a warning - the certificate is read regardless,
+    since the goal is to capture its data, not to validate the connection.
+
 .PARAMETER OutputPath
     Target directory for all generated files (.req/.inf/.json/.pfx).
     Default: current directory.
@@ -146,6 +169,18 @@
 .EXAMPLE
     .\New-CertificateRequest.ps1 -ExportPfx -Thumbprint "AB12CD34..." -IncludeChain
     Exports an existing certificate including the chain as PFX.
+
+.EXAMPLE
+    .\New-CertificateRequest.ps1 -ExportRequestJson -SourceCerFile "C:\Certs\server01.cer"
+    Writes server01.contoso.local.json, derived from the certificate file.
+
+.EXAMPLE
+    .\New-CertificateRequest.ps1 -ExportRequestJson -SourceThumbprint "AB12CD34...","EF56AB78..."
+    Writes one JSON file per certificate found in the local store for the given thumbprints.
+
+.EXAMPLE
+    .\New-CertificateRequest.ps1 -ExportRequestJson -SourceUrl "server01.contoso.local:443"
+    Connects to the host, reads the presented certificate, and writes its JSON definition.
 
 .NOTES
     History:
@@ -197,6 +232,11 @@ Param(
     [switch]$ExportPfx,
     [string]$Thumbprint,
     [switch]$IncludeChain,
+
+    [switch]$ExportRequestJson,
+    [string[]]$SourceCerFile,
+    [string[]]$SourceThumbprint,
+    [string[]]$SourceUrl,
 
     # --- Global ---
     [string]$OutputPath = (Get-Location).Path
@@ -575,12 +615,175 @@ function Export-CertRequestPfx {
     return $pfxPath
 }
 
+function ConvertFrom-CertificateToDefinition {
+    param(
+        [Parameter(Mandatory)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate
+    )
+
+    # Parse the Subject DN into its RDN components (CN/OU/O/L/S/C), respecting
+    # escaped commas within a value (e.g. "O=Contoso\, Inc.").
+    $subjectDict = @{}
+    foreach ($rdn in ($Certificate.Subject -split '(?<!\\),')) {
+        $parts = $rdn.Trim() -split '=', 2
+        if ($parts.Count -eq 2) {
+            $key = $parts[0].Trim().ToUpperInvariant()
+            $value = $parts[1].Trim()
+            if (-not $subjectDict.ContainsKey($key)) { $subjectDict[$key] = $value }
+        }
+    }
+
+    $cn = $subjectDict['CN']
+    if (-not $cn) {
+        throw "Certificate has no CN in its subject: $($Certificate.Subject)"
+    }
+
+    # Read the SAN extension (OID 2.5.29.17) value-based rather than label-based,
+    # since .NET only exposes it as a formatted, UI-culture-dependent string
+    # (e.g. "DNS Name=..." on English Windows vs. "DNS-Name=..." on German Windows).
+    # Classifying by the value's shape (looks like an IP -> IP, otherwise DNS) avoids
+    # any dependency on the OS locale.
+    $sanList = @()
+    $sanExt = $Certificate.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.17' }
+    if ($sanExt) {
+        $formatted = $sanExt.Format($true)
+        $tokens = $formatted -split "(`r`n|,)" | Where-Object { $_ -match '=' }
+        foreach ($token in $tokens) {
+            $value = ($token -split '=', 2)[1]
+            if ($value) { $sanList += $value.Trim() }
+        }
+    }
+
+    # The CN is dropped from the SAN list here - New-CertRequestInfContent adds it
+    # back automatically on the next request run (Merge-SanWithCn), so there is no
+    # need to carry it over explicitly.
+    $sanList = $sanList | Where-Object { $_ -and ($_ -ne $cn) } | Select-Object -Unique
+
+    [PSCustomObject]@{
+        CN                 = $cn
+        SAN                = @($sanList)
+        Organization       = $subjectDict['O']
+        OrganizationalUnit = $subjectDict['OU']
+        Locality           = $subjectDict['L']
+        State              = $subjectDict['S']
+        Country            = $subjectDict['C']
+        FriendlyName       = $Certificate.FriendlyName
+    }
+}
+
+function Get-CertificateFromUrl {
+    param(
+        [Parameter(Mandatory)][string]$UrlOrHost
+    )
+
+    $targetHost = $UrlOrHost
+    $port = 443
+
+    # Accepts "host", "host:port", or a full URL ("https://host:port/...")
+    if ($targetHost -match '^[a-zA-Z]+://') {
+        $uri = [Uri]$targetHost
+        $targetHost = $uri.Host
+        $port = if ($uri.Port -gt 0) { $uri.Port } else { 443 }
+    }
+    elseif ($targetHost -match '^(.+):(\d+)$') {
+        $targetHost = $matches[1]
+        $port = [int]$matches[2]
+    }
+
+    $script:LastSslPolicyErrors = [System.Net.Security.SslPolicyErrors]::None
+    $validationCallback = {
+        param($sender, $certificate, $chain, $sslPolicyErrors)
+        $script:LastSslPolicyErrors = $sslPolicyErrors
+        # Always accept - the goal here is to read the certificate's data, not to
+        # validate the connection. Trust/validity issues are reported as a warning
+        # by the caller instead of aborting the read.
+        return $true
+    }
+
+    $tcpClient = New-Object System.Net.Sockets.TcpClient
+    try {
+        $tcpClient.Connect($targetHost, $port)
+        $sslStream = New-Object System.Net.Security.SslStream($tcpClient.GetStream(), $false, $validationCallback)
+        try {
+            $sslStream.AuthenticateAsClient($targetHost)
+            $remoteCert = $sslStream.RemoteCertificate
+            if (-not $remoteCert) {
+                throw "No certificate received from ${targetHost}:${port}."
+            }
+            if ($script:LastSslPolicyErrors -ne [System.Net.Security.SslPolicyErrors]::None) {
+                Write-Warning "Certificate from ${targetHost}:${port} did not pass trust validation ($($script:LastSslPolicyErrors)). Reading its data anyway."
+            }
+            return New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($remoteCert)
+        }
+        finally {
+            $sslStream.Dispose()
+        }
+    }
+    finally {
+        $tcpClient.Dispose()
+    }
+}
+
+function Save-RequestJsonFile {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory)]$Definition,
+        [Parameter(Mandatory)][string]$OutputPath,
+        [switch]$Force
+    )
+
+    $safeName = ConvertTo-SafeFileName -Name $Definition.CN
+    $jsonPath = Join-Path $OutputPath "$safeName.json"
+
+    if ((Test-Path $jsonPath) -and -not $Force) {
+        throw "File already exists: $jsonPath (use -Force to overwrite)"
+    }
+
+    $ordered = [ordered]@{
+        CN  = $Definition.CN
+        SAN = @($Definition.SAN)
+    }
+    if ($Definition.Organization)       { $ordered.Organization       = $Definition.Organization }
+    if ($Definition.OrganizationalUnit) { $ordered.OrganizationalUnit = $Definition.OrganizationalUnit }
+    if ($Definition.Locality)           { $ordered.Locality           = $Definition.Locality }
+    if ($Definition.State)              { $ordered.State              = $Definition.State }
+    if ($Definition.Country)            { $ordered.Country            = $Definition.Country }
+    if ($Definition.FriendlyName)       { $ordered.FriendlyName       = $Definition.FriendlyName }
+
+    $json = @($ordered) | ConvertTo-Json -Depth 5
+
+    if ($PSCmdlet.ShouldProcess($jsonPath, 'Write request JSON file')) {
+        [System.IO.File]::WriteAllText($jsonPath, $json, [System.Text.Encoding]::UTF8)
+    }
+
+    return $jsonPath
+}
+
+function Write-FailedResultDetails {
+    param(
+        [Parameter(Mandatory)]$Results,
+        [string]$IdentifierProperty = 'CN'
+    )
+
+    $failedResults = @($Results | Where-Object { -not $_.Success })
+    if ($failedResults.Count -eq 0) { return }
+
+    Write-Host ''
+    Write-Host 'Details for failed entries (full, untruncated message):' -ForegroundColor Yellow
+    foreach ($item in $failedResults) {
+        Write-Host '---' -ForegroundColor Yellow
+        Write-Host "$($IdentifierProperty): $($item.$IdentifierProperty)"
+        Write-Host "Message: $($item.Message)"
+    }
+    Write-Host ''
+}
+
 function Get-RequestMode {
     $modes = @()
     if ($GenerateExampleJSON) { $modes += 'GenerateExampleJSON' }
     if ($CompleteRequest)     { $modes += 'CompleteRequest' }
     if ($CompleteAndExport)   { $modes += 'CompleteAndExport' }
     if ($ExportPfx)           { $modes += 'ExportPfx' }
+    if ($ExportRequestJson)   { $modes += 'ExportRequestJson' }
 
     if ($modes.Count -gt 1) {
         throw "The modes $($modes -join ', ') are mutually exclusive. Please specify only one."
@@ -617,6 +820,19 @@ function Test-InputParameters {
         'CompleteAndExport' {
             if (-not (Test-Path $CompleteAndExport)) {
                 throw "File for -CompleteAndExport not found: $CompleteAndExport"
+            }
+        }
+        'ExportRequestJson' {
+            $provided = @()
+            if ($SourceCerFile)    { $provided += 'SourceCerFile' }
+            if ($SourceThumbprint) { $provided += 'SourceThumbprint' }
+            if ($SourceUrl)        { $provided += 'SourceUrl' }
+
+            if ($provided.Count -eq 0) {
+                throw "-ExportRequestJson requires exactly one of -SourceCerFile, -SourceThumbprint, or -SourceUrl."
+            }
+            if ($provided.Count -gt 1) {
+                throw "Please specify only one of -SourceCerFile, -SourceThumbprint, or -SourceUrl (found: $($provided -join ', '))."
             }
         }
     }
@@ -659,6 +875,64 @@ try {
         'ExportPfx' {
             $pfxPath = Export-CertRequestPfx -Thumbprint $Thumbprint -MachineContext $MachineContext -IncludeChain:$IncludeChain -OutputPath $OutputPath -Force:$Force
             Write-Host "PFX exported: $pfxPath" -ForegroundColor Green
+        }
+
+        'ExportRequestJson' {
+            $sourceType = if ($SourceCerFile) { 'CerFile' } elseif ($SourceThumbprint) { 'Thumbprint' } else { 'Url' }
+            $storeLocation = if ($MachineContext) { 'Cert:\LocalMachine\My' } else { 'Cert:\CurrentUser\My' }
+
+            $sourceValues = switch ($sourceType) {
+                'CerFile'    { $SourceCerFile }
+                'Thumbprint' { $SourceThumbprint }
+                'Url'        { $SourceUrl }
+            }
+
+            $results = foreach ($sourceValue in $sourceValues) {
+                $resultObj = [PSCustomObject]@{
+                    Source   = $sourceValue
+                    CN       = ''
+                    JsonPath = ''
+                    Success  = $false
+                    Message  = ''
+                }
+
+                try {
+                    $cert = switch ($sourceType) {
+                        'CerFile' {
+                            if (-not (Test-Path $sourceValue)) { throw "Certificate file not found: $sourceValue" }
+                            New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($sourceValue)
+                        }
+                        'Thumbprint' {
+                            $found = Get-ChildItem -Path $storeLocation | Where-Object { $_.Thumbprint -eq $sourceValue }
+                            if (-not $found) { throw "Certificate with thumbprint '$sourceValue' was not found under $storeLocation." }
+                            $found
+                        }
+                        'Url' {
+                            Get-CertificateFromUrl -UrlOrHost $sourceValue
+                        }
+                    }
+
+                    $def = ConvertFrom-CertificateToDefinition -Certificate $cert
+                    $jsonPath = Save-RequestJsonFile -Definition $def -OutputPath $OutputPath -Force:$Force
+
+                    $resultObj.CN       = $def.CN
+                    $resultObj.JsonPath = $jsonPath
+                    $resultObj.Success  = $true
+                }
+                catch {
+                    $resultObj.Message = $_.Exception.Message
+                }
+
+                $resultObj
+            }
+
+            $results | Format-Table Source, CN, JsonPath, Success, Message -AutoSize | Out-Host
+            Write-FailedResultDetails -Results $results -IdentifierProperty 'Source'
+
+            $failed = ($results | Where-Object { -not $_.Success }).Count
+            Write-Host "Total: $($results.Count) certificate(s) processed, $failed failed." -ForegroundColor $(if ($failed -gt 0) { 'Yellow' } else { 'Green' })
+
+            $results
         }
 
         'NewRequest' {
@@ -712,10 +986,13 @@ try {
                 $resultObj
             }
 
-            $results | Format-Table CN, ReqPath, Success, Message -AutoSize
+            $results | Format-Table CN, ReqPath, Success, Message -AutoSize | Out-Host
+            Write-FailedResultDetails -Results $results -IdentifierProperty 'CN'
 
             $failed = ($results | Where-Object { -not $_.Success }).Count
             Write-Host "Total: $($results.Count) request(s), $failed failed." -ForegroundColor $(if ($failed -gt 0) { 'Yellow' } else { 'Green' })
+
+            $results
         }
     }
 }
