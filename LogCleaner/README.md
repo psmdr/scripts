@@ -23,23 +23,23 @@ A PowerShell script for automated cleanup of outdated log files on Windows Serve
 
 ## Parameters
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `-IIS` | Switch | — | Clean IIS log files |
-| `-IMAP` | Switch | — | Clean Exchange IMAP4 log files |
-| `-POP` | Switch | — | Clean Exchange POP3 log files |
-| `-CustomPath` | String[] | — | One or more additional log directories |
-| `-IISPath` | String | Auto | Override default IIS log path |
-| `-ImapPath` | String | Auto | Override auto-detected IMAP4 log path |
-| `-PopPath` | String | Auto | Override auto-detected POP3 log path |
-| `-DaysToKeep` | Int | 30 | Retention period in days (applies to all log types) |
-| `-InstallTask` | Switch | — | Register a Scheduled Task for the current parameter set |
-| `-TaskName` | String | Auto | Name of the Scheduled Task (auto-derived from log types if omitted) |
-| `-TaskTime` | String | `03:00` | Daily run time for the Scheduled Task (format: `HH:mm`) |
-| `-TaskUser` | String | SYSTEM | Optional service account for the Scheduled Task |
-| `-Force` | Switch | — | Overwrite an existing task with the same name without prompting |
-| `-ListTasks` | Switch | — | List all tasks created by this script |
-| `-RemoveTask` | String | — | Remove the named Scheduled Task |
+| Parameter      | Type     | Default | Description                                                         |
+| -------------- | -------- | ------- | ------------------------------------------------------------------- |
+| `-IIS`         | Switch   | —       | Clean IIS log files                                                 |
+| `-IMAP`        | Switch   | —       | Clean Exchange IMAP4 log files                                      |
+| `-POP`         | Switch   | —       | Clean Exchange POP3 log files                                       |
+| `-CustomPath`  | String[] | —       | One or more additional log directories                              |
+| `-IISPath`     | String   | Auto    | Override default IIS log path                                       |
+| `-ImapPath`    | String   | Auto    | Override auto-detected IMAP4 log path                               |
+| `-PopPath`     | String   | Auto    | Override auto-detected POP3 log path                                |
+| `-DaysToKeep`  | Int      | 30      | Retention period in days (applies to all log types)                 |
+| `-InstallTask` | Switch   | —       | Register a Scheduled Task for the current parameter set             |
+| `-TaskName`    | String   | Auto    | Name of the Scheduled Task (auto-derived from log types if omitted) |
+| `-TaskTime`    | String   | `03:00` | Daily run time for the Scheduled Task (format: `HH:mm`)             |
+| `-TaskUser`    | String   | SYSTEM  | Optional service account for the Scheduled Task                     |
+| `-Force`       | Switch   | —       | Overwrite an existing task with the same name without prompting     |
+| `-ListTasks`   | Switch   | —       | List all tasks created by this script                               |
+| `-RemoveTask`  | String   | —       | Remove the named Scheduled Task                                     |
 
 ## Usage
 
@@ -121,6 +121,6 @@ Total: 15 found, 15 deleted, 0 errors.
 
 ## Notes
 
-- Originally based on an IIS-only cleanup script by Paul Cunningham; extended and rewritten by Max Droege.
+- Originally based on an IIS-only cleanup script by Paul Cunningham
 - Exchange installation path is read from the registry (`HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Setup` for Exchange 2013/2016/2019, `v14` for Exchange 2010).
 - The script is saved as **UTF-8 with BOM** to ensure correct handling of special characters in Windows PowerShell 5.1.
