@@ -11,6 +11,17 @@ thresholds, and every optional check are controlled through an external JSON
 config file, so the same script file can be reused across multiple Exchange
 organizations without any code changes.
 
+> **Recommended setup:** run this script directly on an Exchange server (not
+> on a separate admin/management server), registered as a Scheduled Task
+> running as `NT AUTHORITY\SYSTEM` (`-RunAsSystem`). This is especially
+> important in environments with more than one Exchange server: without it,
+> cross-server calls (for example database statistics for a database mounted
+> on a different Mailbox server) can silently fail with authentication
+> errors, and the report will be missing that information even though the
+> script otherwise runs without errors. See
+> [Permissions and authentication](#permissions-and-authentication) for the
+> full explanation and alternatives.
+
 ## Contents
 
 - [Requirements](#requirements)
@@ -39,6 +50,12 @@ organizations without any code changes.
   [Permissions and authentication](#permissions-and-authentication)
 - `ScheduledTasks` PowerShell module (built into Windows) if you use
   `-RegisterTask`
+
+**Where to run it:** ideally directly on an Exchange server, not on a
+separate admin/management server. If there is more than one Exchange
+server in the environment, running elsewhere can lead to a report that is
+silently missing some information for cross-server calls - see
+[Permissions and authentication](#permissions-and-authentication).
 
 The script does not manage or store any credentials for the report run
 itself. It always runs in the security context of the account that starts
@@ -272,14 +289,16 @@ working, which is a good sign this is the cause.
 
 Ways to resolve it, roughly in order of how commonly they are used:
 
-1. **Run the script directly on an Exchange server.** Exchange servers
-   already trust each other for the necessary Kerberos delegation through
-   their computer accounts (part of standard Exchange setup). Combine this
-   with `-RunAsSystem` when registering the Scheduled Task: a task running
-   as `NT AUTHORITY\SYSTEM` on an Exchange server authenticates as that
-   server's computer account, which is already part of the trusted delegation
-   path - this is usually the simplest fix and avoids managing a password
-   for a dedicated service account.
+1. **Run the script directly on an Exchange server (recommended).**
+   Exchange servers already trust each other for the necessary Kerberos
+   delegation through their computer accounts (part of standard Exchange
+   setup). Combine this with `-RunAsSystem` when registering the Scheduled
+   Task: a task running as `NT AUTHORITY\SYSTEM` on an Exchange server
+   authenticates as that server's computer account, which is already part
+   of the trusted delegation path - this is usually the simplest fix and
+   avoids managing a password for a dedicated service account. This is the
+   setup described in [Recommended setup](#exchangereport) at the top of
+   this document.
 2. **Set up Kerberos Constrained Delegation** for a dedicated service
    account, allowing it to delegate to the Exchange (Mailbox) servers. More
    setup effort, but keeps the account's privileges narrower than
