@@ -27,6 +27,7 @@ organizations without any code changes.
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [Configuration reference](#configuration-reference)
+  - [WarningsOnly mode](#warningsonly-mode)
 - [Command line reference](#command-line-reference)
 - [Running as a Scheduled Task](#running-as-a-scheduled-task)
 - [Permissions and authentication](#permissions-and-authentication)
@@ -118,6 +119,43 @@ other field has a default and can be omitted from the file.
 | `HtmlReportPath` | string | `"Reports"` | Folder for saved reports. Relative paths are resolved against the script's own folder. |
 | `HtmlReportDaysToKeep` | number | `30` | Days to keep saved HTML reports before automatic cleanup (independent of `LogDaysToKeep`). |
 
+### Report content
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `WarningsOnly` | bool | `false` | If true, the report only contains the warning sections - all routine overview tables are left out, regardless of the `Show*` settings below. If a run finds no warnings, no mail is sent (a note is logged instead), and if `SaveHtmlReport` is enabled a report file with a `_NoWarnings` suffix in its file name is still saved to disk. See [WarningsOnly mode](#warningsonly-mode) below. |
+| `ShowMailboxOverview` | bool | `true` | Include the Mailbox Overview section. When disabled, mailbox counts are not even collected (no related warnings depend on them). |
+| `ShowDatabaseOverview` | bool | `true` | Include the Database Overview section. |
+| `ShowDatabaseCopyStatus` | bool | `true` | Include the Database Copy Status section. |
+| `ShowPrimaryActiveManager` | bool | `true` | Include the Primary Active Manager section. |
+
+The four `Show*` settings only control whether that section is *displayed*.
+The underlying data collection and warning detection always run, so a
+related warning (for example a backup issue, or a PAM mismatch) still shows
+up in the Warnings section at the top of the report even if the
+corresponding overview table is hidden. This mirrors how
+`EnableQueueCheck` / `EnableCertificateCheck` / `EnableServiceCheck` already
+control their own sections (with the difference that those also skip the
+underlying check entirely, since nothing else depends on that data).
+
+#### WarningsOnly mode
+
+`WarningsOnly` is meant for noise reduction on environments that are mailed
+frequently (for example several times a day, see
+[Running as a Scheduled Task](#running-as-a-scheduled-task)): instead of a
+full report every time, you only get mailed when there is actually something
+to look at.
+
+- **Warnings found:** the mail is sent as usual, but the report body only
+  contains the Warnings section (plus the status badge) - the routine
+  overview tables are left out to keep the mail short and focused.
+- **No warnings found:** no mail is sent at all. The run is still logged as
+  usual, and if `SaveHtmlReport` is enabled, a report file is still written
+  to `HtmlReportPath` so there is a record of the check having run - its
+  file name gets a `_NoWarnings` suffix (for example
+  `20260101_0600_Contoso_NoWarnings.html`) so a clean run is recognizable
+  without opening the file.
+
 ### CIM connection (drives and services)
 
 | Field | Type | Default | Description |
@@ -187,6 +225,13 @@ for details.
   "HtmlReportPath": "Reports",
   "HtmlReportDaysToKeep": 30,
 
+  "WarningsOnly": false,
+
+  "ShowMailboxOverview": true,
+  "ShowDatabaseOverview": true,
+  "ShowDatabaseCopyStatus": true,
+  "ShowPrimaryActiveManager": true,
+
   "EnableQueueCheck": true,
   "QueueLengthWarning": 100,
   "PoisonQueueAlwaysWarn": true,
@@ -247,6 +292,11 @@ $cred = Get-Credential
 # Running as NT AUTHORITY\SYSTEM (see Permissions and authentication)
 .\ExchangeReport.ps1 -RegisterTask -TaskInterval Daily -TaskTime "06:00" -RunAsSystem
 ```
+
+> **Tip:** if you schedule the report several times a day, consider setting
+> `WarningsOnly: true` in the config so you only get mailed when there is
+> actually something to look at - see
+> [WarningsOnly mode](#warningsonly-mode).
 
 The registered task calls `powershell.exe -NoProfile -ExecutionPolicy Bypass
 -File "<script path>" -ConfigPath "<config path>"`, so it always uses the
@@ -378,6 +428,7 @@ change log. Summary:
 
 | Version | Highlights |
 |---|---|
+| 4.6 | `WarningsOnly` mode (mail suppressed / `_NoWarnings` report file when nothing is wrong), individually hideable Mailbox/Database/Database Copy Status/Primary Active Manager sections |
 | 4.5 | Multiple `-TaskTime` values per day, `-RunAsSystem` for Scheduled Tasks |
 | 4.4 | Fixed `$PSScriptRoot` empty-string startup error under `-File` invocation |
 | 4.3 | `-TaskCredential` for non-interactive Scheduled Task registration |

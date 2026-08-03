@@ -97,6 +97,18 @@ without an interactive prompt during registration.
 Runs the report using config.json next to the script.
 
 .NOTES
+ Version 4.6
+ Changes in v4.6:
+  - Added WarningsOnly: when enabled, the report contains only the warning
+    sections (no routine overview tables). If a run finds no warnings, no
+    mail is sent (logged instead), and if SaveHtmlReport is enabled a report
+    file with a "_NoWarnings" suffix is still saved to disk
+  - Added ShowMailboxOverview, ShowDatabaseOverview, ShowDatabaseCopyStatus
+    and ShowPrimaryActiveManager to individually hide those report sections,
+    the same way Message Queues/Certificates/Services already could be
+    disabled. The underlying data and warning detection are unaffected, only
+    the display of the routine overview table is controlled
+
  Version 4.5
  Changes in v4.5:
   - TaskTime now accepts multiple values (for example "06:00","14:00") so the
@@ -290,6 +302,13 @@ Function New-SampleConfig {
         HtmlReportPath            = "Reports"
         HtmlReportDaysToKeep     = 30
 
+        WarningsOnly              = $false
+
+        ShowMailboxOverview       = $true
+        ShowDatabaseOverview      = $true
+        ShowDatabaseCopyStatus   = $true
+        ShowPrimaryActiveManager = $true
+
         EnableQueueCheck          = $true
         QueueLengthWarning        = 100
         PoisonQueueAlwaysWarn    = $true
@@ -340,6 +359,22 @@ Function New-SampleConfig {
     Write-Host " SaveHtmlReport           If true, a copy of the HTML report is saved to disk"
     Write-Host " HtmlReportPath           Folder for saved HTML reports, relative or absolute"
     Write-Host " HtmlReportDaysToKeep     Days to keep saved HTML reports before automatic cleanup"
+    Write-Host ""
+    Write-Host " WarningsOnly             If true, the report only contains warning sections (no routine"
+    Write-Host "                          overview tables). If a run finds no warnings, no mail is sent;"
+    Write-Host "                          a note is logged instead, and (if SaveHtmlReport is true) a"
+    Write-Host "                          report file with a '_NoWarnings' suffix is still saved to disk"
+    Write-Host ""
+    Write-Host " ShowMailboxOverview      Include the Mailbox Overview section in the report"
+    Write-Host " ShowDatabaseOverview     Include the Database Overview section in the report"
+    Write-Host " ShowDatabaseCopyStatus   Include the Database Copy Status section in the report"
+    Write-Host " ShowPrimaryActiveManager Include the Primary Active Manager section in the report"
+    Write-Host "                          These four only control whether the section is shown. The"
+    Write-Host "                          underlying data is always collected, so related warnings (for"
+    Write-Host "                          example a backup issue or a PAM mismatch) still appear in the"
+    Write-Host "                          Warnings section even if the corresponding overview is hidden."
+    Write-Host "                          All four, and WarningsOnly itself, are ignored (treated as"
+    Write-Host "                          hidden) whenever WarningsOnly is true"
     Write-Host ""
     Write-Host " EnableQueueCheck         Enable or disable the message queue check"
     Write-Host " QueueLengthWarning       Message count above which a queue is flagged"
@@ -533,6 +568,13 @@ Function Get-ReportConfig {
         SaveHtmlReport            = [bool](Get-ConfigValue $raw "SaveHtmlReport" $true)
         HtmlReportPath            = Get-ConfigValue $raw "HtmlReportPath" "Reports"
         HtmlReportDaysToKeep     = [int](Get-ConfigValue $raw "HtmlReportDaysToKeep" 30)
+
+        WarningsOnly              = [bool](Get-ConfigValue $raw "WarningsOnly" $false)
+
+        ShowMailboxOverview       = [bool](Get-ConfigValue $raw "ShowMailboxOverview" $true)
+        ShowDatabaseOverview      = [bool](Get-ConfigValue $raw "ShowDatabaseOverview" $true)
+        ShowDatabaseCopyStatus   = [bool](Get-ConfigValue $raw "ShowDatabaseCopyStatus" $true)
+        ShowPrimaryActiveManager = [bool](Get-ConfigValue $raw "ShowPrimaryActiveManager" $true)
 
         EnableQueueCheck          = [bool](Get-ConfigValue $raw "EnableQueueCheck" $true)
         QueueLengthWarning        = [int](Get-ConfigValue $raw "QueueLengthWarning" 100)
@@ -1036,23 +1078,29 @@ try {
     #endregion
 
     #region Mailboxes
-    $Types = 1, 2, 4, 16, 32
+    $objMbInfo = $null
+    if ($reportConfig.ShowMailboxOverview) {
+        $Types = 1, 2, 4, 16, 32
 
-    $adu = Get-ADUser -Properties msExchHomeServerName, MsExchRecipientTypeDetails -Filter * -ErrorAction Stop
-    $rec = $adu | Where-Object {
-        $Types -contains $_.MsExchRecipientTypeDetails -and
-        $_.msExchHomeServerName -and
-        $_.msExchHomeServerName -match "cn=($serverPatternForMatch)$"
+        $adu = Get-ADUser -Properties msExchHomeServerName, MsExchRecipientTypeDetails -Filter * -ErrorAction Stop
+        $rec = $adu | Where-Object {
+            $Types -contains $_.MsExchRecipientTypeDetails -and
+            $_.msExchHomeServerName -and
+            $_.msExchHomeServerName -match "cn=($serverPatternForMatch)$"
+        }
+        $stdmbx    = $rec | Where-Object { $_.MsExchRecipientTypeDetails -eq 1 -or $_.MsExchRecipientTypeDetails -eq 2 }
+        $sharedMbx = $rec | Where-Object { $_.MsExchRecipientTypeDetails -eq 4 }
+        $resMbx    = $rec | Where-Object { $_.MsExchRecipientTypeDetails -eq 16 -or $_.MsExchRecipientTypeDetails -eq 32 }
+
+        $objMbInfo = [pscustomobject]@{
+            "User Mailboxes"     = $stdmbx.Count
+            "Shared Mailboxes"   = $sharedMbx.Count
+            "Resource Mailboxes" = $resMbx.Count
+            "Total Mailboxes"    = $rec.Count
+        }
     }
-    $stdmbx    = $rec | Where-Object { $_.MsExchRecipientTypeDetails -eq 1 -or $_.MsExchRecipientTypeDetails -eq 2 }
-    $sharedMbx = $rec | Where-Object { $_.MsExchRecipientTypeDetails -eq 4 }
-    $resMbx    = $rec | Where-Object { $_.MsExchRecipientTypeDetails -eq 16 -or $_.MsExchRecipientTypeDetails -eq 32 }
-
-    $objMbInfo = [pscustomobject]@{
-        "User Mailboxes"     = $stdmbx.Count
-        "Shared Mailboxes"   = $sharedMbx.Count
-        "Resource Mailboxes" = $resMbx.Count
-        "Total Mailboxes"    = $rec.Count
+    else {
+        LogAndOutput "ShowMailboxOverview is disabled, skipping mailbox count collection."
     }
     #endregion
 
@@ -1348,6 +1396,10 @@ try {
     [void]$html.Append("<p class='subtitle'>Generated on $(Get-Date -Format 'yyyy-MM-dd HH:mm')</p>")
     [void]$html.Append("<p>$statusBadge</p>")
 
+    if ($reportConfig.WarningsOnly -and -not $warning) {
+        [void]$html.Append("<p class='muted'>WarningsOnly is enabled and no warnings were found on this run. No mail was sent.</p>")
+    }
+
     if ($warning) {
         [void]$html.Append("<h2>Warnings</h2>")
 
@@ -1387,59 +1439,69 @@ try {
         }
     }
 
-    [void]$html.Append("<h2>Primary Active Manager</h2>")
-    $pamNoticeClass = if ($dagwarning) { "notice-warn" } else { "notice-ok" }
-    [void]$html.Append("<div class='notice $pamNoticeClass'>")
-    [void]$html.Append("<p>Primary Active Manager is <strong>$($dag.PrimaryActiveManager)</strong></p>")
-    if ($dagwarning) {
-        [void]$html.Append("<p>$dagwarning</p>")
-    }
-    [void]$html.Append("</div>")
+    if (-not $reportConfig.WarningsOnly) {
+        if ($reportConfig.ShowPrimaryActiveManager) {
+            [void]$html.Append("<h2>Primary Active Manager</h2>")
+            $pamNoticeClass = if ($dagwarning) { "notice-warn" } else { "notice-ok" }
+            [void]$html.Append("<div class='notice $pamNoticeClass'>")
+            [void]$html.Append("<p>Primary Active Manager is <strong>$($dag.PrimaryActiveManager)</strong></p>")
+            if ($dagwarning) {
+                [void]$html.Append("<p>$dagwarning</p>")
+            }
+            [void]$html.Append("</div>")
+        }
 
-    [void]$html.Append("<h2>Mailbox Overview</h2>")
-    [void]$html.Append((ConvertTo-StyledHtmlTable -Objects @($objMbInfo) -Columns @("User Mailboxes","Shared Mailboxes","Resource Mailboxes","Total Mailboxes")))
+        if ($reportConfig.ShowMailboxOverview -and $objMbInfo) {
+            [void]$html.Append("<h2>Mailbox Overview</h2>")
+            [void]$html.Append((ConvertTo-StyledHtmlTable -Objects @($objMbInfo) -Columns @("User Mailboxes","Shared Mailboxes","Resource Mailboxes","Total Mailboxes")))
+        }
 
-    [void]$html.Append("<h2>Database Overview</h2>")
-    [void]$html.Append((ConvertTo-StyledHtmlTable -Objects ($DBInfo | Sort-Object Name) -Columns @("Name","ActiveOnServer","MailboxCount","DBSizeInGB","WhiteSpaceInGB","LastFullBackup","IsMountedOnCorrectServer","Pref1Server") -RowClassRule {
-        param($o)
-        if ($o.Issue) { "warn" }
-    }))
+        if ($reportConfig.ShowDatabaseOverview) {
+            [void]$html.Append("<h2>Database Overview</h2>")
+            [void]$html.Append((ConvertTo-StyledHtmlTable -Objects ($DBInfo | Sort-Object Name) -Columns @("Name","ActiveOnServer","MailboxCount","DBSizeInGB","WhiteSpaceInGB","LastFullBackup","IsMountedOnCorrectServer","Pref1Server") -RowClassRule {
+                param($o)
+                if ($o.Issue) { "warn" }
+            }))
+        }
 
-    [void]$html.Append("<h2>Database Copy Status</h2>")
-    [void]$html.Append((ConvertTo-StyledHtmlTable -Objects ($mbcopystate | Sort-Object DBName, Server) -Columns @("DBName","Server","Status","CopyQueueLength","ReplayQueueLength") -RowClassRule {
-        param($o)
-        if ($o.Issue) { "warn" }
-    }))
+        if ($reportConfig.ShowDatabaseCopyStatus) {
+            [void]$html.Append("<h2>Database Copy Status</h2>")
+            [void]$html.Append((ConvertTo-StyledHtmlTable -Objects ($mbcopystate | Sort-Object DBName, Server) -Columns @("DBName","Server","Status","CopyQueueLength","ReplayQueueLength") -RowClassRule {
+                param($o)
+                if ($o.Issue) { "warn" }
+            }))
+        }
 
-    if ($reportConfig.EnableQueueCheck) {
-        [void]$html.Append("<h2>Message Queues</h2>")
-        [void]$html.Append((ConvertTo-StyledHtmlTable -Objects ($queueInfo | Sort-Object Server, Queue) -Columns @("Server","Queue","DeliveryType","MessageCount","Status") -RowClassRule {
+        if ($reportConfig.EnableQueueCheck) {
+            [void]$html.Append("<h2>Message Queues</h2>")
+            [void]$html.Append((ConvertTo-StyledHtmlTable -Objects ($queueInfo | Sort-Object Server, Queue) -Columns @("Server","Queue","DeliveryType","MessageCount","Status") -RowClassRule {
+                param($o)
+                if ($o.Issue) { "warn" }
+            }))
+        }
+
+        if ($reportConfig.EnableCertificateCheck) {
+            [void]$html.Append("<h2>Certificates In Use</h2>")
+            [void]$html.Append((ConvertTo-StyledHtmlTable -Objects ($certInfo | Sort-Object Server, NotAfter) -Columns @("Server","Subject","Services","NotAfter","DaysRemaining") -RowClassRule {
+                param($o)
+                if ($o.DaysRemaining -lt 0) { "crit" } elseif ($o.Issue) { "warn" }
+            }))
+        }
+
+        if ($reportConfig.EnableServiceCheck) {
+            [void]$html.Append("<h2>Exchange Services</h2>")
+            [void]$html.Append((ConvertTo-StyledHtmlTable -Objects ($serviceInfo | Sort-Object Server, ServiceName) -Columns @("Server","ServiceName","DisplayName","Status","StartType") -RowClassRule {
+                param($o)
+                if ($o.Issue) { "crit" }
+            }))
+        }
+
+        [void]$html.Append("<h2>Drive Overview</h2>")
+        [void]$html.Append((ConvertTo-StyledHtmlTable -Objects ($objAllDrives | Sort-Object Server, Drive) -Columns @("Server","Drive","Size (GB)","Free (GB)","Free (%)") -RowClassRule {
             param($o)
-            if ($o.Issue) { "warn" }
+            if ($null -ne $o."Free (%)" -and $o."Free (%)" -le $reportConfig.DriveFreePercentWarning) { "warn" }
         }))
     }
-
-    if ($reportConfig.EnableCertificateCheck) {
-        [void]$html.Append("<h2>Certificates In Use</h2>")
-        [void]$html.Append((ConvertTo-StyledHtmlTable -Objects ($certInfo | Sort-Object Server, NotAfter) -Columns @("Server","Subject","Services","NotAfter","DaysRemaining") -RowClassRule {
-            param($o)
-            if ($o.DaysRemaining -lt 0) { "crit" } elseif ($o.Issue) { "warn" }
-        }))
-    }
-
-    if ($reportConfig.EnableServiceCheck) {
-        [void]$html.Append("<h2>Exchange Services</h2>")
-        [void]$html.Append((ConvertTo-StyledHtmlTable -Objects ($serviceInfo | Sort-Object Server, ServiceName) -Columns @("Server","ServiceName","DisplayName","Status","StartType") -RowClassRule {
-            param($o)
-            if ($o.Issue) { "crit" }
-        }))
-    }
-
-    [void]$html.Append("<h2>Drive Overview</h2>")
-    [void]$html.Append((ConvertTo-StyledHtmlTable -Objects ($objAllDrives | Sort-Object Server, Drive) -Columns @("Server","Drive","Size (GB)","Free (GB)","Free (%)") -RowClassRule {
-        param($o)
-        if ($null -ne $o."Free (%)" -and $o."Free (%)" -le $reportConfig.DriveFreePercentWarning) { "warn" }
-    }))
 
     [void]$html.Append("<div class='footer'>Automatically generated by ExchangeReport.ps1 on $($env:computername)</div>")
     [void]$html.Append("</div></body></html>")
@@ -1454,7 +1516,8 @@ try {
                 New-Item -ItemType Directory -Path $reportConfig.HtmlReportPath -Force | Out-Null
             }
             $envPart = Get-SafeFileNamePart $reportConfig.EnvironmentName
-            $reportFileName = "$(Get-Date -Format yyyyMMdd_HHmm)_$envPart.html"
+            $noWarningsSuffix = if ($reportConfig.WarningsOnly -and -not $warning) { "_NoWarnings" } else { "" }
+            $reportFileName = "$(Get-Date -Format yyyyMMdd_HHmm)_$envPart$noWarningsSuffix.html"
             $reportFilePath = Join-Path -Path $reportConfig.HtmlReportPath -ChildPath $reportFileName
             $htmlContent | Set-Content -Path $reportFilePath -Encoding utf8 -ErrorAction Stop
             LogAndOutput "HTML report saved to $reportFilePath"
@@ -1466,12 +1529,17 @@ try {
     #endregion
 
     #region Send mail
-    $subject = if ($warning) { "$($reportConfig.EnvironmentName) - Exchange Report - Warning found" } else { "$($reportConfig.EnvironmentName) - Exchange Report" }
+    if ($reportConfig.WarningsOnly -and -not $warning) {
+        LogAndOutput "WarningsOnly is enabled and no warnings were found, mail was not sent."
+    }
+    else {
+        $subject = if ($warning) { "$($reportConfig.EnvironmentName) - Exchange Report - Warning found" } else { "$($reportConfig.EnvironmentName) - Exchange Report" }
 
-    Send-MailMessage -SmtpServer $reportConfig.SmtpServer -From $reportConfig.MailFrom -To $reportConfig.MailTo -Subject $subject `
-        -Body $htmlContent -Encoding utf8 -BodyAsHtml -ErrorAction Stop
+        Send-MailMessage -SmtpServer $reportConfig.SmtpServer -From $reportConfig.MailFrom -To $reportConfig.MailTo -Subject $subject `
+            -Body $htmlContent -Encoding utf8 -BodyAsHtml -ErrorAction Stop
 
-    LogAndOutput "Mail sent"
+        LogAndOutput "Mail sent"
+    }
     LogAndOutput "Script finished"
     #endregion
 
