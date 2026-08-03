@@ -128,8 +128,9 @@ other field has a default and can be omitted from the file.
 | `ShowDatabaseOverview` | bool | `true` | Include the Database Overview section. |
 | `ShowDatabaseCopyStatus` | bool | `true` | Include the Database Copy Status section. |
 | `ShowPrimaryActiveManager` | bool | `true` | Include the Primary Active Manager section. |
+| `ShowDriveOverview` | bool | `true` | Include the Drive Overview section. |
 
-The four `Show*` settings only control whether that section is *displayed*.
+The five `Show*` settings only control whether that section is *displayed*.
 The underlying data collection and warning detection always run, so a
 related warning (for example a backup issue, or a PAM mismatch) still shows
 up in the Warnings section at the top of the report even if the
@@ -231,6 +232,7 @@ for details.
   "ShowDatabaseOverview": true,
   "ShowDatabaseCopyStatus": true,
   "ShowPrimaryActiveManager": true,
+  "ShowDriveOverview": true,
 
   "EnableQueueCheck": true,
   "QueueLengthWarning": 100,
@@ -428,7 +430,7 @@ change log. Summary:
 
 | Version | Highlights |
 |---|---|
-| 4.6 | `WarningsOnly` mode (mail suppressed / `_NoWarnings` report file when nothing is wrong), individually hideable Mailbox/Database/Database Copy Status/Primary Active Manager sections |
+| 4.6 | `WarningsOnly` mode (mail suppressed / `_NoWarnings` report file when nothing is wrong), individually hideable Mailbox/Database/Database Copy Status/Primary Active Manager/Drive Overview sections |
 | 4.5 | Multiple `-TaskTime` values per day, `-RunAsSystem` for Scheduled Tasks |
 | 4.4 | Fixed `$PSScriptRoot` empty-string startup error under `-File` invocation |
 | 4.3 | `-TaskCredential` for non-interactive Scheduled Task registration |
